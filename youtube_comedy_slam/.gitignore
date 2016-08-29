@@ -1,1 +1,5 @@
 data
+.ipynb_checkpoints/
+__pycache__
+test_unique
+train_unique
