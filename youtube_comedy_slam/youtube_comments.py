@@ -20,6 +20,10 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, lik
 
 
 def non_private_videos(idlist, pbar=None):
+    """
+    Checks which videos in the idlist are non private and pbar is a progress bar
+    implementation
+    """
     videos = []
     update = lambda x: None
     if (not (pbar is None)) and callable(pbar.update):
@@ -40,7 +44,7 @@ def is_video_private(youtube_id):
     response = session.get(YOUTUBE_COMMENTS_URL.format(youtube_id=youtube_id))
     html = response.text
     # Check if video is private
-    return "video is private" in html
+    return ("video is private" in html) or ("Sorry about that." in html)
 
 def unique_videos_in_dataset(file):
     with open(file) as csvfile:
