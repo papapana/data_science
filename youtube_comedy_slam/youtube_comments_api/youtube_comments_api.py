@@ -10,7 +10,7 @@ from apiclient.discovery import build
 from apiclient.errors import HttpError
 
 
-def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, limit_pages=None):
+def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, limit_pages=None, write_header=True):
     """
     Our purpose is to download comments and append them to a csv with the following format:
     videoId,textDisplay,isReplyTo,canReply,totalReplyCount,etag,id,authorChannelId,authorDisplayName,likeCount,
@@ -20,6 +20,7 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
     :param csvfile: the resulting csvfile to write
     :param max_results: max_results for each call (1-100)
     :param limit_pages: if set limits the comment pages to download, mainly for testing purposes
+    :param write_header: write or not the csv header
     :return: top results but also write everything in the csvfile
     """
 
@@ -31,7 +32,6 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     results = None
-    write_header = not os.path.isfile(csvfile)
 
     # Setup csv file
     fieldnames = ['videoId', 'textDisplay', 'isReplyTo', 'canReply', 'totalReplyCount', 'kind', 'etag', 'id',
@@ -150,6 +150,7 @@ if __name__ == "__main__":
     parser.add_argument('--csv_file', type=argparse.FileType('w'), help='CSV file', required=True)
     parser.add_argument('--start_from', type=int, default=1)
     parser.add_argument('--end', type=int, default=-1)
+    parser.add_argument('--no-csv-header', action='store_false')
     args = parser.parse_args()
 
     unique_videos = []
@@ -163,9 +164,10 @@ if __name__ == "__main__":
     print("Will download comments and replies from videos {0} to {1}".format((start + 1), end))
     csv_file = str(args.csv_file.name)
     pbar = tqdm(range(end-start), desc="Downloading")
+
     for video in selected:
         video_comment_threads = get_comment_threads(youtube_service=youtube, video_id=video,
-                                                    csvfile=csv_file)
+                                                    csvfile=csv_file, write_header=args.no_csv_header)
         pbar.update(1)
 
 
