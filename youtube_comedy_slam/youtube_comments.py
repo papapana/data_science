@@ -98,7 +98,6 @@ def extract_reply_cids(html):
         tree = lxml.html.fromstring(html)
     except Exception as err:
         raise
-        # TODO: log these errors
         # print("Error: {0} ".format(err) + " while opening: " + html)
     sel = CSSSelector('.comment-replies-header > .load-comments')
     return [i.get('data-cid') for i in sel(tree)]
