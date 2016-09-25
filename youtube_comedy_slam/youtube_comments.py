@@ -19,7 +19,7 @@ YOUTUBE_COMMENTS_AJAX_URL = 'https://www.youtube.com/comment_ajax'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36'
 
 
-def non_private_videos(idlist, pbar=None):
+def non_private_videos(id_list, pbar=None):
     """
     Checks which videos in the idlist are non private and pbar is a progress bar
     implementation
@@ -29,7 +29,7 @@ def non_private_videos(idlist, pbar=None):
     if (not (pbar is None)) and callable(pbar.update):
         update = pbar.update
 
-    for video_id in idlist:
+    for video_id in id_list:
         if not is_video_private(video_id):
             videos += [video_id]
         update(1)
