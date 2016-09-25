@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
+import argparse
 import csv
+import errno
 import logging
+import math
 import os
 import sys
-import math
 
 from apiclient.discovery import build
 from apiclient.errors import HttpError
+from tqdm import tqdm
 
 
 def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, limit_pages=None, write_header=True):
@@ -117,6 +120,16 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
             logger.error("HTTP Error for video_id,{0},firstPage,1,The error was,{1}".format(video_id,
                                                                                                 str(err)))
             pass
+        except SocketError as e:
+            # We handle only Connection Reset by Peer currently
+            if e.errno != errno.ECONNRESET:
+                logger.error("Socket Error for video_id,{0},firstPage,1,The error was,{1}".format(video_id,
+                                                                                                  str(err)))
+                raise
+            # Handle connection reset by peer by deleting last video downloaded and telling the user
+            print("Connection reset by peer, stopped at video_id {0}".format(video_id))
+            sys.exit(-1)
+
         except Exception as e:
             logger.error("Unexpected error:", sys.exc_info()[0], "Exception", e)
             raise
@@ -142,8 +155,6 @@ def get_default_youtube_service():
 
 
 if __name__ == "__main__":
-    import argparse
-    from tqdm import tqdm
     youtube = get_default_youtube_service()
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_id_file', type=argparse.FileType('r'), help='File containing ids to download', required=True)
