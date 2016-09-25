@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-
+"""
+This module contains essential functions in order to download comments and replies to comments from youtube videos
+"""
 import argparse
 import csv
 import errno
 import logging
 import math
 import os
+import socket
 import sys
 
 from apiclient.discovery import build
@@ -29,11 +32,11 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
 
     logger = logging.getLogger("comment_error")
     logger.setLevel(logging.ERROR)
-    fh = logging.FileHandler('youtube_comment_errors.log')
-    fh.setLevel(logging.ERROR)
+    file_handler = logging.FileHandler('youtube_comment_errors.log')
+    file_handler.setLevel(logging.ERROR)
     formatter = logging.Formatter(fmt='%(asctime)s %(message)s', datefmt='%d/%m/%Y %I:%M:%S %p')
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
     results = None
 
     # Setup csv file
@@ -45,6 +48,12 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
             writer.writeheader()
 
         def get_comment_page(page_results, ignore_first=False):
+            """
+            Processes a comment_page of results
+            :param page_results: The results of a comment page
+            :param ignore_first: Ignore the first result to avoid duplicates from previous calls
+            :return:
+            """
             first = True
             for item in page_results["items"]:
                 if first:
@@ -59,6 +68,13 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
                                         reply_to=item["snippet"]["topLevelComment"]["id"])
 
         def process_comment(item, is_reply=False, reply_to=None):
+            """
+            Processes one comment and writes the result to the csv file
+            :param item: The comment to process
+            :param is_reply: indicates if the comment is reply
+            :param reply_to: the id of the comment it is a reply to
+            :return:
+            """
             snippet = item["snippet"]
             comment = snippet if is_reply else snippet["topLevelComment"]["snippet"]
             video_id2 = comment["videoId"]
@@ -92,9 +108,9 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
             ).execute()
             get_comment_page(results)
             pages = math.inf
-            if type(limit_pages) is int and limit_pages > 0:
+            if isinstance(limit_pages, int) and limit_pages > 0:
                 pages = limit_pages
-            while ('nextPageToken' in results) and (pages > 0):
+            while 'nextPageToken' in results and pages > 0:
                 pages -= 1
                 # Fetch next page
                 next_page_token = results['nextPageToken']
@@ -112,17 +128,15 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
                     logger.error("HTTP Error for video_id,{0},pageToken,'{1}',The error was,{2}".format(video_id,
                                                                                                         next_page_token,
                                                                                                         str(err)))
-                    pass
-                except Exception as e:
-                    logger.error("Unexpected error:", sys.exc_info()[0], "Exception", e)
+                except Exception as err:
+                    logger.error("Unexpected error:", sys.exc_info()[0], "Exception", err)
                     raise
         except HttpError as err:
             logger.error("HTTP Error for video_id,{0},firstPage,1,The error was,{1}".format(video_id,
-                                                                                                str(err)))
-            pass
-        except SocketError as e:
+                                                                                            str(err)))
+        except socket.error as err:
             # We handle only Connection Reset by Peer currently
-            if e.errno != errno.ECONNRESET:
+            if err.errno != errno.ECONNRESET:
                 logger.error("Socket Error for video_id,{0},firstPage,1,The error was,{1}".format(video_id,
                                                                                                   str(err)))
                 raise
@@ -130,8 +144,8 @@ def get_comment_threads(youtube_service, video_id, csvfile, max_results=100, lim
             print("Connection reset by peer, stopped at video_id {0}".format(video_id))
             sys.exit(-1)
 
-        except Exception as e:
-            logger.error("Unexpected error:", sys.exc_info()[0], "Exception", e)
+        except Exception as err:
+            logger.error("Unexpected error:", sys.exc_info()[0], "Exception", err)
             raise
 
     return results
@@ -150,36 +164,34 @@ def get_default_youtube_service():
     youtube_api_service_name = "youtube"
     youtube_api_version = "v3"
 
-    youtube = build(youtube_api_service_name, youtube_api_version, developerKey=developer_key)
-    return youtube
+    youtube1 = build(youtube_api_service_name, youtube_api_version, developerKey=developer_key)
+    return youtube1
 
 
 if __name__ == "__main__":
-    youtube = get_default_youtube_service()
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--video_id_file', type=argparse.FileType('r'), help='File containing ids to download', required=True)
-    parser.add_argument('--csv_file', type=argparse.FileType('w'), help='CSV file', required=True)
-    parser.add_argument('--start_from', type=int, default=1)
-    parser.add_argument('--end', type=int, default=-1)
-    parser.add_argument('--no-csv-header', action='store_false')
-    args = parser.parse_args()
+    YOUTUBE = get_default_youtube_service()
+    PARSER = argparse.ArgumentParser()
+    PARSER.add_argument('--video_id_file', type=argparse.FileType('r'), help='File containing ids to download',
+                        required=True)
+    PARSER.add_argument('--csv_file', type=argparse.FileType('w'), help='CSV file', required=True)
+    PARSER.add_argument('--start_from', type=int, default=1)
+    PARSER.add_argument('--end', type=int, default=-1)
+    PARSER.add_argument('--no-csv-header', action='store_false')
+    ARGS = PARSER.parse_args()
 
-    unique_videos = []
-    start = (args.start_from - 1) if args.start_from > 0 else 0
-    with open(args.video_id_file.name) as f:
+    UNIQUE_VIDEOS = []
+    START = (ARGS.start_from - 1) if ARGS.start_from > 0 else 0
+    with open(ARGS.video_id_file.name) as f:
         for l in f:
-            unique_videos += [l.strip()]
-        end = args.end if args.end > start else len(unique_videos)
-    selected = unique_videos[start:end]
+            UNIQUE_VIDEOS += [l.strip()]
+        END = ARGS.end if ARGS.end > START else len(UNIQUE_VIDEOS)
+    SELECTED = UNIQUE_VIDEOS[START:END]
 
-    print("Will download comments and replies from videos {0} to {1}".format((start + 1), end))
-    csv_file = str(args.csv_file.name)
-    pbar = tqdm(range(end-start), desc="Downloading")
+    print("Will download comments and replies from videos {0} to {1}".format((START + 1), END))
+    CSV_FILE = str(ARGS.csv_file.name)
+    PBAR = tqdm(range(END - START), desc="Downloading")
 
-    for video in selected:
-        video_comment_threads = get_comment_threads(youtube_service=youtube, video_id=video,
-                                                    csvfile=csv_file, write_header=args.no_csv_header)
-        pbar.update(1)
-
-
-
+    for video in SELECTED:
+        video_comment_threads = get_comment_threads(youtube_service=YOUTUBE, video_id=video,
+                                                    csvfile=CSV_FILE, write_header=ARGS.no_csv_header)
+        PBAR.update(1)
