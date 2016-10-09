@@ -3,7 +3,6 @@ import os
 from unittest import TestCase
 
 from testfixtures import LogCapture
-
 from youtube_comments_api.youtube_comments_api import get_comment_threads
 from youtube_comments_api.youtube_comments_api import get_default_youtube_service
 
