@@ -71,3 +71,7 @@ target/
 
 # exclude data from source control by default
 /data/
+
+temp*.py
+*.pkl
+*.npy
