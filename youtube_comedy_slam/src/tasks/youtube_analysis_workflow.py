@@ -325,18 +325,20 @@ class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
         mean_sq_error = sqrt(mean_squared_error(y_true, y_pred))
         video_score_test = pd.read_csv(self.input()[4]['test'].path, header=None, index_col=0)[1].to_dict()
         initial_dataset_test = pd.read_csv(self.input()[5]['test'].path)
+
         # Transform to problem A
         bin_y_true = self.predict_initial_problem(initial_dataset_test, video_score_test)
-        bin_y_pred = self.predict_initial_problem(initial_dataset_test, video_score_test)
+        trans_y_pred = dict(zip(video_score_test.keys(), y_pred))
+        bin_y_pred = self.predict_initial_problem(initial_dataset_test, trans_y_pred)
         cnf_matrix = confusion_matrix(bin_y_true, bin_y_pred)
         self.filename = self.output().path
         self.description = "LR, English, score per video, training set, score not normalized"
         pb_variance = regr.score(scipy_train.transpose(), label_train)
         self.set_results(mean_sq_error, r2, pb_variance, cnf_matrix)
-        print(self.get_experiment_result())
         self.write_experiment_result()
 
-    def predict_initial_problem(self, initial_dataset, video_score_test):
+    @staticmethod
+    def predict_initial_problem(initial_dataset, video_score_test):
         bin_ytest = []
         for row in initial_dataset.itertuples():
             # print(row.video_id1)
