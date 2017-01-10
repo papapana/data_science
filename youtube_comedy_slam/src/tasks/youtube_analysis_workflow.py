@@ -1,4 +1,7 @@
+import csv
 import os
+import pickle
+from math import sqrt
 
 import gensim
 import luigi
@@ -7,6 +10,8 @@ from dotenv import load_dotenv, find_dotenv
 from scipy import io
 from sklearn import linear_model
 from sklearn.externals import joblib
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import r2_score, mean_squared_error
 
 from src.features.build_features import feature_sum_score
 from src.features.build_features import get_corpus_by_video_id
@@ -37,6 +42,47 @@ class TimeTaskMixin(object):
     @luigi.Task.event_handler(luigi.Event.PROCESSING_TIME)
     def print_execution_time(self, processing_time):
         print('### PROCESSING TIME ###: ' + str(processing_time))
+
+
+class ExperimentResultsMixin(object):
+    def __init__(self):
+        self.description = ""
+        self.pb_mean_sq = 0.0
+        self.pb_variance = 0.0
+        self.pa_conf_matrix = [[0, 0], [0, 0]]
+        self.pa_conf_matrix_norm = [[0, 0], [0, 0]]
+        self.comments = ""
+        self.pa_precision = 0.0
+        self.pa_recall = 0.0
+        self.pa_f1_score = 0.0
+        self.pb_r2_score = 0.0
+        self.write_mode = 'w+'
+        self.filename = 'temp'
+
+    def set_results(self, pb_mean_sq, pb_r2_score, pb_variance, pa_conf_matrix, comments=""):
+        self.pb_mean_sq = pb_mean_sq
+        self.pb_variance = pb_variance
+        self.pa_conf_matrix = pa_conf_matrix
+        self.pb_r2_score = pb_r2_score
+        self.comments = comments
+        # [[tp, fn], [fp, tn]]
+        tp = self.pa_conf_matrix[0][0]
+        fn = self.pa_conf_matrix[0][1]
+        fp = self.pa_conf_matrix[1][0]
+        tn = self.pa_conf_matrix[1][1]
+        self.pa_precision = tp / (tp + fp)
+        self.pa_recall = tp / (tp + fn)
+        self.pa_f1_score = 2 * (self.pa_precision * self.pa_recall) / (self.pa_precision + self.pa_recall)
+        self.pa_conf_matrix_norm = [[tp / (tp + fn), fn / (tp + fn)], [fp / (fp + tn), tn / (fp + tn)]]
+
+    def get_experiment_result(self):
+        return [self.description, self.pb_mean_sq, self.pb_r2_score, self.pb_variance, self.pa_precision, self.pa_recall,
+                self.pa_f1_score, self.pa_conf_matrix, self.pa_conf_matrix_norm, self.comments]
+
+    def write_experiment_result(self):
+        with open(self.filename, self.write_mode) as fout:
+            wr = csv.writer(fout)
+            wr.writerow(self.get_experiment_result())
 
 
 class AddFeatureSumScoreTask(luigi.Task, TimeTaskMixin):
@@ -224,7 +270,6 @@ class CreateLabelsTask(luigi.Task, TimeTaskMixin):
         """
         return []
 
-
     def output(self):
         """
         When this Task is complete, where will it produce output?
@@ -232,7 +277,7 @@ class CreateLabelsTask(luigi.Task, TimeTaskMixin):
         exists to determine whether the Task needs to run at all.
         """
         return {'train': luigi.LocalTarget(root_path + 'data/processed/label_en_per_video_id.p'),
-                'test': luigi.LocalTarget(root_path + 'data/processed/label_test_en_per_video.p')}
+                'test': luigi.LocalTarget(root_path + 'data/processed/label_test_en_per_video_id.p')}
 
     def run(self):
         # TODO: Produce output
@@ -241,13 +286,18 @@ class CreateLabelsTask(luigi.Task, TimeTaskMixin):
         """
 
 
-class LinearRegressionPerformance(luigi.Task):
+class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
+
+    def __init__(self):
+        luigi.Task.__init__(self)
+        ExperimentResultsMixin.__init__(self)
 
     def requires(self):
         """
          This task requires the Linear Regression Model
         """
-        return [CreateCorpusTask(), CreateLabelsTask(), CreateDictionaryTask(), LinearRegressionTask()]
+        return [CreateCorpusTask(), CreateLabelsTask(), CreateDictionaryTask(), LinearRegressionTask(),
+                AddFeatureSumScoreTask(), InitialProcessedYoutubeDatasets()]
 
     def output(self):
         """
@@ -255,23 +305,45 @@ class LinearRegressionPerformance(luigi.Task):
         Luigi will check whether this output (specified as a Target)
         exists to determine whether the Task needs to run at all.
         """
-        return luigi.LocalTarget(root_path + 'data/processed/lr_performance.log')
+        return luigi.LocalTarget(root_path + 'data/processed/lr_performance.csv')
 
     def run(self):
         """
         LinearRegressionPerformance:
         """
-        # regr = joblib.load(self.input()[3])
-        # id2word = gensim.corpora.Dictionary.load(self.input()[2])
-        # scipy_train = io.mmread(self.input()[1]['train']).tocsr()
-        # scipy_test = io.mmread(self.input()[1]['test']).tocsr()
-        # y_true = label_test
-        # y_pred = regr.predict(scipy_test.transpose())
-        # r2 = r2_score(y_true, y_pred)
-        # mean_sq_error = sqrt(mean_squared_error(y_true, y_pred))
-        # print('Variance score: %.2f' % regr.score(scipy_train.transpose(), label))
-        # print(r2, mean_sq_error)
+        label_test_path = self.input()[1]['test'].path
+        label_train_path = self.input()[1]['train'].path
+        regr = joblib.load(self.input()[3].path)
+        scipy_train = io.mmread(self.input()[0]['train'].path).tocsr()
+        scipy_test = io.mmread(self.input()[0]['test'].path).tocsr()
+        label_train = pickle.load(open(label_train_path, 'rb'))
+        label_test = pickle.load(open(label_test_path, 'rb'))
+        y_true = label_test
+        y_pred = regr.predict(scipy_test.transpose())
+        r2 = r2_score(y_true, y_pred)
+        y_pred = regr.predict(scipy_test.transpose())
+        mean_sq_error = sqrt(mean_squared_error(y_true, y_pred))
+        video_score_test = pd.read_csv(self.input()[4]['test'].path, header=None, index_col=0)[1].to_dict()
+        initial_dataset_test = pd.read_csv(self.input()[5]['test'].path)
+        # Transform to problem A
+        bin_y_true = self.predict_initial_problem(initial_dataset_test, video_score_test)
+        bin_y_pred = self.predict_initial_problem(initial_dataset_test, video_score_test)
+        cnf_matrix = confusion_matrix(bin_y_true, bin_y_pred)
+        self.filename = self.output().path
+        self.description = "LR, English, score per video, training set, score not normalized"
+        pb_variance = regr.score(scipy_train.transpose(), label_train)
+        self.set_results(mean_sq_error, r2, pb_variance, cnf_matrix)
+        print(self.get_experiment_result())
+        self.write_experiment_result()
 
+    def predict_initial_problem(self, initial_dataset, video_score_test):
+        bin_ytest = []
+        for row in initial_dataset.itertuples():
+            # print(row.video_id1)
+            pred1 = video_score_test[row.video_id1] if row.video_id1 in video_score_test else 0.0
+            pred2 = video_score_test[row.video_id2] if row.video_id2 in video_score_test else 0.0
+            bin_ytest += [0 if pred1 >= pred2 else 1]
+        return bin_ytest
 
 
 if __name__ == '__main__':
