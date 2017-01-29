@@ -44,7 +44,7 @@ class TimeTaskMixin(object):
         print('### PROCESSING TIME ###: ' + str(processing_time))
 
 
-class ExperimentResultsMixin(object):
+class ExperimentResults(object):
     def __init__(self):
         self.description = ""
         self.pb_mean_sq = 0.0
@@ -145,6 +145,7 @@ class AddLangFeatureTask(luigi.Task):
         """
         AddLangFeatureTask :
         """
+        pass
 
 
 class CreateDictionaryTask(luigi.Task):
@@ -169,6 +170,7 @@ class CreateDictionaryTask(luigi.Task):
         """
         CreateDictionaryTask:
         """
+        pass
 
 
 class CreateTrainTestIndicesTask(luigi.Task):
@@ -197,6 +199,7 @@ class CreateTrainTestIndicesTask(luigi.Task):
         """
         CreateTrainTestIndicesTask:
         """
+        pass
 
 
 class CreateCorpusTask(luigi.Task, TimeTaskMixin):
@@ -260,6 +263,34 @@ class LinearRegressionTask(luigi.Task, TimeTaskMixin):
         joblib.dump(regr, self.output())
 
 
+class RidgeRegressionTask(luigi.Task, TimeTaskMixin):
+
+    def requires(self):
+        """
+        LR needs score and corpus (for features)
+        """
+        return [AddFeatureSumScoreTask(), CreateCorpusTask()]
+
+    def output(self):
+        """
+        When this Task is complete, where will it produce output?
+        Luigi will check whether this output (specified as a Target)
+        exists to determine whether the Task needs to run at all.
+        """
+        return luigi.LocalTarget(root_path + 'models/ridge_regression_en.pkl')
+
+    def run(self):
+        """
+        RidgeRegressionTask:
+        """
+        scipy_train = io.mmread(self.input()[1]['train']).tocsr()
+        # Create linear regression object
+        regr = linear_model.RidgeCV(n_jobs=-1)
+        # Train the model using the training sets
+        regr.fit(scipy_train.transpose(), label)
+        joblib.dump(regr, self.output())
+
+
 class CreateLabelsTask(luigi.Task, TimeTaskMixin):
 
     def requires(self):
@@ -284,19 +315,62 @@ class CreateLabelsTask(luigi.Task, TimeTaskMixin):
         """
         CreateLabelsTask: 
         """
+        pass
 
 
-class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
+class LinearRegressionPrediction(luigi.Task):
+    # Example parameter for our task: a
+    # date for which a report should be run
+    # report_date = luigi.DateParameter()
+
+    def requires(self):
+        """
+        Which other Tasks need to be complete before
+        this Task can start? Luigi will use this to
+        compute the task dependency graph.
+        """
+        return [CreateCorpusTask(), LinearRegressionTask(), CreateLabelsTask()]
+
+    def output(self):
+        """
+        When this Task is complete, where will it produce output?
+        Luigi will check whether this output (specified as a Target)
+        exists to determine whether the Task needs to run at all.
+        """
+        return {'train': luigi.LocalTarget(root_path + 'data/processed/linear_predictions_en_per_video_train.p'),
+                'test': luigi.LocalTarget(root_path + 'data/processed/linear_predictions_en_per_video_test.p'),
+                'variance': luigi.LocalTarget(root_path + 'data/processed/linear_predictions_en_per_video_variance.p')}
+
+    def run(self):
+        """
+        LinearRegressionPrediction:
+        Predict for both the training and the testing dataset
+        """
+        regr = joblib.load(self.input()[1].path)
+        scipy_test = io.mmread(self.input()[0]['test'].path).tocsr()
+        y_pred = regr.predict(scipy_test.transpose())
+        joblib.dump(y_pred, self.output()['test'].path)
+        scipy_train = io.mmread(self.input()[0]['train'].path).tocsr()
+        y_pred = regr.predict(scipy_train.transpose())
+        joblib.dump(y_pred, self.output()['train'].path)
+        label_train_path = self.input()[2]['train'].path
+        label_train = pickle.load(open(label_train_path, 'rb'))
+        variance = regr.score(scipy_train.transpose(), label_train)
+        joblib.dump(variance, self.output()['variance'].path)
+
+
+class LinearRegressionPerformance(luigi.Task):
 
     def __init__(self):
         luigi.Task.__init__(self)
-        ExperimentResultsMixin.__init__(self)
+        self.test_results = ExperimentResults()
+        self.train_results = ExperimentResults()
 
     def requires(self):
         """
          This task requires the Linear Regression Model
         """
-        return [CreateCorpusTask(), CreateLabelsTask(), CreateDictionaryTask(), LinearRegressionTask(),
+        return [LinearRegressionPrediction(), CreateLabelsTask(), CreateDictionaryTask(),
                 AddFeatureSumScoreTask(), InitialProcessedYoutubeDatasets()]
 
     def output(self):
@@ -312,19 +386,15 @@ class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
         LinearRegressionPerformance:
         """
         label_test_path = self.input()[1]['test'].path
-        label_train_path = self.input()[1]['train'].path
-        regr = joblib.load(self.input()[3].path)
-        scipy_train = io.mmread(self.input()[0]['train'].path).tocsr()
-        scipy_test = io.mmread(self.input()[0]['test'].path).tocsr()
-        label_train = pickle.load(open(label_train_path, 'rb'))
+
         label_test = pickle.load(open(label_test_path, 'rb'))
         y_true = label_test
-        y_pred = regr.predict(scipy_test.transpose())
+        y_pred = joblib.load(self.input()[0]['test'].path)
         r2 = r2_score(y_true, y_pred)
-        y_pred = regr.predict(scipy_test.transpose())
         mean_sq_error = sqrt(mean_squared_error(y_true, y_pred))
-        video_score_test = pd.read_csv(self.input()[4]['test'].path, header=None, index_col=0)[1].to_dict()
-        initial_dataset_test = pd.read_csv(self.input()[5]['test'].path)
+
+        video_score_test = pd.read_csv(self.input()[3]['test'].path, header=None, index_col=0)[1].to_dict()
+        initial_dataset_test = pd.read_csv(self.input()[4]['test'].path)
 
         # Transform to problem A
         bin_y_true = self.predict_initial_problem(initial_dataset_test, video_score_test)
@@ -333,7 +403,7 @@ class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
         cnf_matrix = confusion_matrix(bin_y_true, bin_y_pred)
         self.filename = self.output().path
         self.description = "LR, English, score per video, training set, score not normalized"
-        pb_variance = regr.score(scipy_train.transpose(), label_train)
+        pb_variance = joblib.load(self.input()[0]['variance'].path)
         self.set_results(mean_sq_error, r2, pb_variance, cnf_matrix)
         self.write_experiment_result()
 
@@ -341,7 +411,6 @@ class LinearRegressionPerformance(luigi.Task, ExperimentResultsMixin):
     def predict_initial_problem(initial_dataset, video_score_test):
         bin_ytest = []
         for row in initial_dataset.itertuples():
-            # print(row.video_id1)
             pred1 = video_score_test[row.video_id1] if row.video_id1 in video_score_test else 0.0
             pred2 = video_score_test[row.video_id2] if row.video_id2 in video_score_test else 0.0
             bin_ytest += [0 if pred1 >= pred2 else 1]
