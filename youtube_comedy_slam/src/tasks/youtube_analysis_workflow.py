@@ -45,7 +45,7 @@ class TimeTaskMixin(object):
 
 
 class ExperimentResults(object):
-    def __init__(self):
+    def __init__(self, filename):
         self.description = ""
         self.pb_mean_sq = 0.0
         self.pb_variance = 0.0
@@ -57,7 +57,7 @@ class ExperimentResults(object):
         self.pa_f1_score = 0.0
         self.pb_r2_score = 0.0
         self.write_mode = 'w+'
-        self.filename = 'temp'
+        self.filename = filename
 
     def set_results(self, pb_mean_sq, pb_r2_score, pb_variance, pa_conf_matrix, comments=""):
         self.pb_mean_sq = pb_mean_sq
@@ -241,7 +241,7 @@ class LinearRegressionTask(luigi.Task, TimeTaskMixin):
         """
         LR needs score and corpus (for features)
         """
-        return [AddFeatureSumScoreTask(), CreateCorpusTask()]
+        return [AddFeatureSumScoreTask(), CreateCorpusTask(), CreateLabelsTask()]
 
     def output(self):
         """
@@ -255,12 +255,14 @@ class LinearRegressionTask(luigi.Task, TimeTaskMixin):
         """
         LinearRegressionTask:
         """
-        scipy_train = io.mmread(self.input()[1]['train']).tocsr()
+        scipy_train = io.mmread(self.input()[1]['train'].path).tocsr()
+        label_train_path = self.input()[2]['train'].path
+        label_train = pickle.load(open(label_train_path, 'rb'))
         # Create linear regression object
         regr = linear_model.LinearRegression(n_jobs=-1)
         # Train the model using the training sets
-        regr.fit(scipy_train.transpose(), label)
-        joblib.dump(regr, self.output())
+        regr.fit(scipy_train.transpose(), label_train)
+        joblib.dump(regr, self.output().path)
 
 
 class RidgeRegressionTask(luigi.Task, TimeTaskMixin):
@@ -269,7 +271,7 @@ class RidgeRegressionTask(luigi.Task, TimeTaskMixin):
         """
         LR needs score and corpus (for features)
         """
-        return [AddFeatureSumScoreTask(), CreateCorpusTask()]
+        return [AddFeatureSumScoreTask(), CreateCorpusTask(), CreateLabelsTask()]
 
     def output(self):
         """
@@ -283,12 +285,14 @@ class RidgeRegressionTask(luigi.Task, TimeTaskMixin):
         """
         RidgeRegressionTask:
         """
-        scipy_train = io.mmread(self.input()[1]['train']).tocsr()
+        scipy_train = io.mmread(self.input()[1]['train'].path).tocsr()
+        label_train_path = self.input()[2]['train'].path
+        label_train = pickle.load(open(label_train_path, 'rb'))
         # Create linear regression object
-        regr = linear_model.RidgeCV(n_jobs=-1)
+        regr = linear_model.RidgeCV()
         # Train the model using the training sets
-        regr.fit(scipy_train.transpose(), label)
-        joblib.dump(regr, self.output())
+        regr.fit(scipy_train.transpose(), label_train)
+        joblib.dump(regr, self.output().path)
 
 
 class CreateLabelsTask(luigi.Task, TimeTaskMixin):
@@ -316,6 +320,95 @@ class CreateLabelsTask(luigi.Task, TimeTaskMixin):
         CreateLabelsTask: 
         """
         pass
+
+
+class RidgeRegressionPrediction(luigi.Task):
+    # Example parameter for our task: a
+    # date for which a report should be run
+    # report_date = luigi.DateParameter()
+
+    def requires(self):
+        """
+        Which other Tasks need to be complete before
+        this Task can start? Luigi will use this to
+        compute the task dependency graph.
+        """
+        return [CreateCorpusTask(), RidgeRegressionTask(), CreateLabelsTask()]
+
+    def output(self):
+        """
+        When this Task is complete, where will it produce output?
+        Luigi will check whether this output (specified as a Target)
+        exists to determine whether the Task needs to run at all.
+        """
+        return {'train': luigi.LocalTarget(root_path + 'data/processed/ridge_predictions_en_per_video_train.p'),
+                'test': luigi.LocalTarget(root_path + 'data/processed/ridge_predictions_en_per_video_test.p'),
+                'variance': luigi.LocalTarget(root_path + 'data/processed/ridge_predictions_en_per_video_variance.p')}
+
+    def run(self):
+        """
+        LinearRegressionPrediction:
+        Predict for both the training and the testing dataset
+        """
+        regr = joblib.load(self.input()[1].path)
+        scipy_test = io.mmread(self.input()[0]['test'].path).tocsr()
+        y_pred = regr.predict(scipy_test.transpose())
+        joblib.dump(y_pred, self.output()['test'].path)
+
+        scipy_train = io.mmread(self.input()[0]['train'].path).tocsr()
+        y_pred = regr.predict(scipy_train.transpose())
+        joblib.dump(y_pred, self.output()['train'].path)
+
+        label_train_path = self.input()[2]['train'].path
+        label_train = pickle.load(open(label_train_path, 'rb'))
+        variance = regr.score(scipy_train.transpose(), label_train)
+        joblib.dump(variance, self.output()['variance'].path)
+
+
+class RidgeRegressionPerformance(luigi.Task):
+
+    def __init__(self):
+        luigi.Task.__init__(self)
+        self.test_results = ExperimentResults(self.output()['test'].path)
+        self.train_results = ExperimentResults(self.output()['train'].path)
+
+    def requires(self):
+        """
+         This task requires the Linear Regression Model
+        """
+        return [RidgeRegressionPrediction(), CreateLabelsTask(), CreateDictionaryTask(),
+                AddFeatureSumScoreTask(), InitialProcessedYoutubeDatasets()]
+
+    def output(self):
+        """
+        When this Task is complete, where will it produce output?
+        Luigi will check whether this output (specified as a Target)
+        exists to determine whether the Task needs to run at all.
+        """
+        return {'train': luigi.LocalTarget(root_path + 'data/processed/ridge_performance_train.csv'),
+                'test': luigi.LocalTarget(root_path + 'data/processed/ridge_performance_test.csv')}
+
+    def run(self):
+        """
+        LinearRegressionPerformance:
+        """
+        # test dataset
+        label_test_path = self.input()[1]['test'].path
+        y_pred_path = self.input()[0]['test'].path
+        video_score_path = self.input()[3]['test'].path
+        initial_dataset_path = self.input()[4]['test'].path
+        Utilities.performance_for_dataset(label_test_path, y_pred_path, video_score_path, initial_dataset_path,
+                                          self.test_results,
+                                          "Ridge Regression, English, score per video, test set, score not normalized")
+
+        # training dataset
+        label_train_path = self.input()[1]['train'].path
+        y_pred_path = self.input()[0]['train'].path
+        video_score_path = self.input()[3]['train'].path
+        initial_dataset_path = self.input()[4]['train'].path
+        Utilities.performance_for_dataset(label_train_path, y_pred_path, video_score_path, initial_dataset_path,
+                                     self.train_results,
+                                     "Ridge Regression, English, score per video, training set, score not normalized")
 
 
 class LinearRegressionPrediction(luigi.Task):
@@ -350,9 +443,11 @@ class LinearRegressionPrediction(luigi.Task):
         scipy_test = io.mmread(self.input()[0]['test'].path).tocsr()
         y_pred = regr.predict(scipy_test.transpose())
         joblib.dump(y_pred, self.output()['test'].path)
+
         scipy_train = io.mmread(self.input()[0]['train'].path).tocsr()
         y_pred = regr.predict(scipy_train.transpose())
         joblib.dump(y_pred, self.output()['train'].path)
+
         label_train_path = self.input()[2]['train'].path
         label_train = pickle.load(open(label_train_path, 'rb'))
         variance = regr.score(scipy_train.transpose(), label_train)
@@ -363,8 +458,8 @@ class LinearRegressionPerformance(luigi.Task):
 
     def __init__(self):
         luigi.Task.__init__(self)
-        self.test_results = ExperimentResults()
-        self.train_results = ExperimentResults()
+        self.test_results = ExperimentResults(self.output()['test'].path)
+        self.train_results = ExperimentResults(self.output()['train'].path)
 
     def requires(self):
         """
@@ -379,33 +474,64 @@ class LinearRegressionPerformance(luigi.Task):
         Luigi will check whether this output (specified as a Target)
         exists to determine whether the Task needs to run at all.
         """
-        return luigi.LocalTarget(root_path + 'data/processed/lr_performance.csv')
+        return {'train': luigi.LocalTarget(root_path + 'data/processed/lr_performance_train.csv'),
+                'test': luigi.LocalTarget(root_path + 'data/processed/lr_performance_test.csv'),
+                'false_positives': luigi.LocalTarget(root_path + 'data/processed/false_positives.csv'),
+                'false_negatives': luigi.LocalTarget(root_path + 'data/processed/false_negatives.csv')}
 
     def run(self):
         """
         LinearRegressionPerformance:
         """
+        # test dataset
         label_test_path = self.input()[1]['test'].path
+        y_pred_path = self.input()[0]['test'].path
+        video_score_path = self.input()[3]['test'].path
+        initial_dataset_path = self.input()[4]['test'].path
+        Utilities.performance_for_dataset(self, label_test_path, y_pred_path, video_score_path, initial_dataset_path,
+                                          self.test_results,
+                                          "LR, English, score per video, test set, score not normalized")
 
-        label_test = pickle.load(open(label_test_path, 'rb'))
+        # training dataset
+        label_train_path = self.input()[1]['train'].path
+        y_pred_path = self.input()[0]['train'].path
+        video_score_path = self.input()[3]['train'].path
+        initial_dataset_path = self.input()[4]['train'].path
+        Utilities.performance_for_dataset(self, label_train_path, y_pred_path, video_score_path, initial_dataset_path,
+                                          self.train_results,
+                                          "LR, English, score per video, training set, score not normalized")
+
+
+class Utilities:
+
+    @staticmethod
+    def performance_for_dataset(self, label_path, y_pred_path, video_score_path, initial_dataset_path,
+                                experiment_results_object, experiment_label):
+        label_test = pickle.load(open(label_path, 'rb'))
         y_true = label_test
-        y_pred = joblib.load(self.input()[0]['test'].path)
+        y_pred = joblib.load(y_pred_path)
         r2 = r2_score(y_true, y_pred)
         mean_sq_error = sqrt(mean_squared_error(y_true, y_pred))
-
-        video_score_test = pd.read_csv(self.input()[3]['test'].path, header=None, index_col=0)[1].to_dict()
-        initial_dataset_test = pd.read_csv(self.input()[4]['test'].path)
+        video_score_test = pd.read_csv(video_score_path, header=None, index_col=0)[1].to_dict()
+        initial_dataset_test = pd.read_csv(initial_dataset_path)
 
         # Transform to problem A
-        bin_y_true = self.predict_initial_problem(initial_dataset_test, video_score_test)
+        bin_y_true = Utilities.predict_initial_problem(initial_dataset_test, video_score_test)
         trans_y_pred = dict(zip(video_score_test.keys(), y_pred))
-        bin_y_pred = self.predict_initial_problem(initial_dataset_test, trans_y_pred)
+        bin_y_pred = Utilities.predict_initial_problem(initial_dataset_test, trans_y_pred)
         cnf_matrix = confusion_matrix(bin_y_true, bin_y_pred)
-        self.filename = self.output().path
-        self.description = "LR, English, score per video, training set, score not normalized"
+        experiment_results_object.description = experiment_label
         pb_variance = joblib.load(self.input()[0]['variance'].path)
-        self.set_results(mean_sq_error, r2, pb_variance, cnf_matrix)
-        self.write_experiment_result()
+        experiment_results_object.set_results(mean_sq_error, r2, pb_variance, cnf_matrix)
+        experiment_results_object.write_experiment_result()
+
+        # Write which ones have different than expected result for further inspection
+        false_positives = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 1 and j[1] == 0]
+        false_negatives = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 0 and j[1] == 1]
+        print(false_positives)
+        print(false_negatives)
+
+
 
     @staticmethod
     def predict_initial_problem(initial_dataset, video_score_test):
@@ -415,7 +541,6 @@ class LinearRegressionPerformance(luigi.Task):
             pred2 = video_score_test[row.video_id2] if row.video_id2 in video_score_test else 0.0
             bin_ytest += [0 if pred1 >= pred2 else 1]
         return bin_ytest
-
 
 if __name__ == '__main__':
     luigi.run()
