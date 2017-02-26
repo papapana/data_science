@@ -148,6 +148,38 @@ class AddLangFeatureTask(luigi.Task):
         pass
 
 
+class ExtractComments(luigi.Task):
+    # Example parameter for our task: a
+    # date for which a report should be run
+    # report_date = luigi.DateParameter()
+
+    def requires(self):
+        """
+        Which other Tasks need to be complete before
+        this Task can start? Luigi will use this to
+        compute the task dependency graph.
+        """
+        return [AddLangFeatureTask()]
+
+    def output(self):
+        """
+        When this Task is complete, where will it produce output?
+        Luigi will check whether this output (specified as a Target)
+        exists to determine whether the Task needs to run at all.
+        """
+        return {'train': luigi.LocalTarget(root_path + 'data/processed/train_dataset_only_comments.csv'),
+                'test': luigi.LocalTarget(root_path + 'data/processed/test_dataset_only_comments.csv')}
+
+    def run(self):
+        """
+        ExtractComments:
+        """
+        train = pd.read_csv(self.input()[0]['train'].path)
+        test = pd.read_csv(self.input()[0]['test'].path)
+        train.textDisplay.to_csv(self.output()['train'].path, sep=',', encoding='utf-8')
+        test.textDisplay.to_csv(self.output()['test'].path, sep=',', encoding='utf-8')
+
+
 class CreateDictionaryTask(luigi.Task):
 
     def requires(self):
@@ -397,8 +429,8 @@ class RidgeRegressionPerformance(luigi.Task):
         y_pred_path = self.input()[0]['test'].path
         video_score_path = self.input()[3]['test'].path
         initial_dataset_path = self.input()[4]['test'].path
-        Utilities.performance_for_dataset(label_test_path, y_pred_path, video_score_path, initial_dataset_path,
-                                          self.test_results,
+        Utilities.get_fp_fn(label_test_path, y_pred_path, video_score_path, initial_dataset_path,
+                            self.test_results,
                                           "Ridge Regression, English, score per video, test set, score not normalized")
 
         # training dataset
@@ -406,8 +438,8 @@ class RidgeRegressionPerformance(luigi.Task):
         y_pred_path = self.input()[0]['train'].path
         video_score_path = self.input()[3]['train'].path
         initial_dataset_path = self.input()[4]['train'].path
-        Utilities.performance_for_dataset(label_train_path, y_pred_path, video_score_path, initial_dataset_path,
-                                     self.train_results,
+        Utilities.get_fp_fn(label_train_path, y_pred_path, video_score_path, initial_dataset_path,
+                            self.train_results,
                                      "Ridge Regression, English, score per video, training set, score not normalized")
 
 
@@ -466,7 +498,7 @@ class LinearRegressionPerformance(luigi.Task):
          This task requires the Linear Regression Model
         """
         return [LinearRegressionPrediction(), CreateLabelsTask(), CreateDictionaryTask(),
-                AddFeatureSumScoreTask(), InitialProcessedYoutubeDatasets()]
+                AddFeatureSumScoreTask(), InitialProcessedYoutubeDatasets(), CreateCorpusTask(), ExtractComments()]
 
     def output(self):
         """
@@ -488,25 +520,34 @@ class LinearRegressionPerformance(luigi.Task):
         y_pred_path = self.input()[0]['test'].path
         video_score_path = self.input()[3]['test'].path
         initial_dataset_path = self.input()[4]['test'].path
-        Utilities.performance_for_dataset(self, label_test_path, y_pred_path, video_score_path, initial_dataset_path,
-                                          self.test_results,
-                                          "LR, English, score per video, test set, score not normalized")
+        fp, fn = Utilities.get_fp_fn(self, label_test_path, y_pred_path, video_score_path, initial_dataset_path,
+                                     self.test_results,
+                                     "LR, English, score per video, test set, score not normalized")
+        scipy_test = io.mmread(self.input()[5]['test'].path).tocsr()
+        print(scipy_test.shape)
+        print(max(fp), max(fn))
+        # print(scipy_test[[fp[0], 0, 1]])
+        comments_test = pd.read_csv(self.input()[5]['test'].path)
+        print(comments_test.shape)
 
         # training dataset
         label_train_path = self.input()[1]['train'].path
         y_pred_path = self.input()[0]['train'].path
         video_score_path = self.input()[3]['train'].path
         initial_dataset_path = self.input()[4]['train'].path
-        Utilities.performance_for_dataset(self, label_train_path, y_pred_path, video_score_path, initial_dataset_path,
-                                          self.train_results,
-                                          "LR, English, score per video, training set, score not normalized")
+        fp, fn = Utilities.get_fp_fn(self, label_train_path, y_pred_path, video_score_path, initial_dataset_path,
+                                     self.train_results,
+                                     "LR, English, score per video, training set, score not normalized")
+
+        # scipy_test = io.mmread(self.input()[5]['test'].path).tocsr()
+        # print(scipy_test.shape)
 
 
 class Utilities:
 
     @staticmethod
-    def performance_for_dataset(self, label_path, y_pred_path, video_score_path, initial_dataset_path,
-                                experiment_results_object, experiment_label):
+    def get_fp_fn( self, label_path, y_pred_path, video_score_path, initial_dataset_path,
+                   experiment_results_object, experiment_label ):
         label_test = pickle.load(open(label_path, 'rb'))
         y_true = label_test
         y_pred = joblib.load(y_pred_path)
@@ -526,10 +567,11 @@ class Utilities:
         experiment_results_object.write_experiment_result()
 
         # Write which ones have different than expected result for further inspection
-        false_positives = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 1 and j[1] == 0]
-        false_negatives = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 0 and j[1] == 1]
-        print(false_positives)
-        print(false_negatives)
+        fp = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 1 and j[1] == 0]
+        fn = [i for i, j in enumerate(zip(bin_y_pred, bin_y_true)) if j[0] == 0 and j[1] == 1]
+        # print(false_positives, file=self.output()[2].path)
+        # print(false_negatives)
+        return (fp, fn)
 
 
 
