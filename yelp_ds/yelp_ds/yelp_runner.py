@@ -32,17 +32,23 @@ def create_train_test_datasets(tag, cores=6):
     if not all(os.path.exists(file) for file in files):
         print('Creating train and test datasets, please wait...')
         if tag == 'small':
-            yelp_df = pd.read_csv('data/processed/yelp_subset.csv')
+            yelp_df = pd.read_csv('data/processed/yelp_subset_with_flag.csv')
         else:
-            yelp_df = pd.read_csv('data/raw/yelp_academic_dataset_review.csv')
+            yelp_df = pd.read_csv('data/processed/yelp_big.csv')
         x = yelp_df.text
-        y = yelp_df.funny
+        y = yelp_df.funny_flag
         x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
-        x_train.to_hdf(files[0], 'x_train_{0}'.format(tag))
-        x_test.to_hdf(files[1], 'x_test_{0}'.format(tag))
-        y_train.to_hdf(files[2], 'y_train_{0}'.format(tag))
-        y_test.to_hdf(files[3], 'y_test_{0}'.format(tag))
-    print('Train and test datasets in place.')
+        x_train.to_hdf(files[0], x_train_str.format(tag))
+        x_test.to_hdf(files[1],  x_test_str.format(tag))
+        y_train.to_hdf(files[2], y_train_str.format(tag))
+        y_test.to_hdf(files[3],  y_test_str.format(tag))
+    else:
+        x_train = pd.read_hdf(x_train_str.format(tag))
+        x_test = pd.read_hdf(x_test_str.format(tag))
+        y_train = pd.read_hdf(y_train_str.format(tag))
+        y_test = pd.read_hdf(y_test_str.format(tag))
+        print('Train and test datasets in place.')
+    return x_train, x_test, y_train, y_test
 
 
 def get_models_d2vec(cores=6):
@@ -52,7 +58,7 @@ def get_models_d2vec(cores=6):
     :return: the models
     """
     return [
-        # PV-DM w/concatenation - window=5 (both sides) approximates paper's 10-word total window size
+        # PV-DM w/concatenation - window=5 (both sides) approximates paper's 10-word total window sizmae
         Doc2Vec(dm=1, dm_concat=1, size=100, window=5, negative=5, hs=0, min_count=2, workers=cores),
         # PV-DBOW
         Doc2Vec(dm=0, size=100, negative=5, hs=0, min_count=2, workers=cores),
@@ -133,7 +139,18 @@ def train_logistic_regression_bow(tag, cores=6):
     else:
         # Making the corpus sparse
         print('Training Logistic Regression for bow...')
-        corpus_bow_sparse = gensim.matutils.corpus2csc(mm_corpus_bow).transpose()
+        corpus_bow_sparse = gensim.matutils.corpus2csc(mm_corpus_bow)
+        corpus_bow_sparse = np.nan_to_num(corpus_bow_sparse)
+        # ll = [i for i, row in enumerate(corpus_bow_sparse.data) if not np.all(np.isnan(row))]
+        # # Remove NaN
+        # print('- Removing NaN, corpus_bow shape before {0}'.format(corpus_bow_sparse.shape))
+        # corpus_bow_sparse = corpus_bow_sparse[ll, :]
+        corpus_bow_sparse = corpus_bow_sparse.transpose()
+        # print('After removing NaN, corpus_bow shape {0}'.format(corpus_bow_sparse.shape))
+        # print('Removing also y_train nan')
+        # y_train = np.array(y_train)
+        # y_train = y_train[ll]
+        # print('y_train shape after keeping all not nan: {0}'.format(len(y_train)))
         logit_bow = LogisticRegression(n_jobs=cores)
         logit_bow.fit(corpus_bow_sparse, y_train)
         joblib.dump(logit_bow, model_file)
@@ -151,7 +168,18 @@ def train_logistic_regression_tfidf(tag, cores=6):
     else:
         # Making the corpus sparse
         print('Logistic Regression model for tfidf is being built...')
-        corpus_tfidf_sparse = gensim.matutils.corpus2csc(mm_corpus_tfidf).transpose()
+        corpus_tfidf_sparse = gensim.matutils.corpus2csc(mm_corpus_tfidf)
+        corpus_tfidf_sparse = np.nan_to_num(corpus_tfidf_sparse)
+        # ll = [i for i, row in enumerate(corpus_tfidf_sparse.data) if not np.all(np.isnan(row))]
+        # Remove NaN
+        # print('Removing NaN, corpus_bow shape before {0}'.format(corpus_tfidf_sparse.shape))
+        # corpus_tfidf_sparse = corpus_tfidf_sparse[ll, :]
+        corpus_tfidf_sparse = corpus_tfidf_sparse.transpose()
+        # print('After removing NaN, corpus_bow shape {0}'.format(corpus_tfidf_sparse.shape))
+        # print('Removing also y_train nan')
+        # y_train = np.array(y_train)
+        # y_train = y_train[ll]
+        # print('y_train shape after keeping all not nan: {0}'.format(len(y_train)))
         logit_tfidf = LogisticRegression(n_jobs=cores)
         logit_tfidf.fit(corpus_tfidf_sparse, y_train)
         joblib.dump(logit_tfidf, model_file)
@@ -198,7 +226,11 @@ def predict_bow_tfidf(tag, cores=6):
     files = ['data/processed/accuracy_bow_{0}.p'.format(tag),
              'data/processed/confusion_matrix_bow_{0}.p'.format(tag),
              'data/processed/accuracy_tfidf_{0}.p'.format(tag),
-             'data/processed/confusion_matrix_tfidf_{0}.p'.format(tag)
+             'data/processed/confusion_matrix_tfidf_{0}.p'.format(tag),
+             'data/processed/f1_bow_{0}.p'.format(tag),
+             'data/processed/f1_tfidf_{0}.p'.format(tag),
+             'data/processed/y_pred_bow_{0}.p'.format(tag),
+             'data/processed/y_pred_tfidf_{0}.p'.format(tag)
              ]
     if all([os.path.exists(file) for file in files]):
         print('Predictions exist, loading...')
@@ -206,6 +238,10 @@ def predict_bow_tfidf(tag, cores=6):
         p_metrics_conf_matrix_bow = pickle.load(open(files[1], 'rb'))
         p_metrics_tfidf = pickle.load(open(files[2], 'rb'))
         p_metrics_conf_matrix_tfidf = pickle.load(open(files[3], 'rb'))
+        f1_bow = pickle.load(open(files[4], 'rb'))
+        f1_tfidf = pickle.load(open(files[5], 'rb'))
+        y_pred_bow = pickle.load(open(files[6], 'rb'))
+        y_pred_tfidf = pickle.load(open(files[7], 'rb'))
     else:
         print('Making predictions...')
         dict_file = 'data/processed/dict_train_{0}.dict'
@@ -215,6 +251,8 @@ def predict_bow_tfidf(tag, cores=6):
         p_metrics_bow = metrics.accuracy_score(y_true=y_true, y_pred=y_pred_bow)
         p_metrics_conf_matrix_bow = metrics.confusion_matrix(y_true=y_true, y_pred=y_pred_bow)
         pickle.dump(p_metrics_bow, open(files[0], 'wb'))
+        pickle.dump(y_pred_bow, open(files[6], 'wb'))
+        pickle.dump(f1_bow, open(files[4], 'wb'))
         pickle.dump(p_metrics_conf_matrix_bow, open(files[1], 'wb'))
 
         x_test_sparse = gensim.matutils.corpus2csc(corpuses_test_tfidf, num_terms=len(dict_train)).transpose()
@@ -222,12 +260,19 @@ def predict_bow_tfidf(tag, cores=6):
         p_metrics_tfidf = metrics.accuracy_score(y_true=y_true, y_pred=y_pred_tfidf)
         p_metrics_conf_matrix_tfidf = metrics.confusion_matrix(y_true=y_true, y_pred=y_pred_tfidf)
         pickle.dump(p_metrics_tfidf, open(files[2], 'wb'))
+        pickle.dump(f1_tfidf, open(files[5], 'wb'))
+        pickle.dump(y_pred_tfidf, open(files[7], 'wb'))
         pickle.dump(p_metrics_conf_matrix_tfidf, open(files[3], 'wb'))
 
-    print('name: {0} - accuracy: {1}'.format('bow', p_metrics_bow))
-    print('name: {0} - accuracy: {1}'.format('tfidf', p_metrics_tfidf))
+    print('name: {0} - accuracy: {1} '.format('bow', p_metrics_bow))
+    print('name: {0} - accuracy: {1} '.format('tfidf', p_metrics_tfidf))
+    print('confusion matrix bow:')
+    print(p_metrics_conf_matrix_bow)
+    print('confusion matrix tfidf: ')
+    print(p_metrics_conf_matrix_tfidf)
 
-    return p_metrics_bow, p_metrics_conf_matrix_bow, p_metrics_tfidf, p_metrics_conf_matrix_tfidf
+    return p_metrics_bow, p_metrics_conf_matrix_bow, p_metrics_tfidf, p_metrics_conf_matrix_tfidf, y_pred_bow, \
+           y_pred_tfidf
 
 
 def create_and_train_models_d2vec(tag, cores=6):
@@ -393,27 +438,34 @@ def predictions_d2vec(tag, cores=6):
     y_test = pd.read_hdf(file).tolist()
     models = create_and_train_models_d2vec(tag, cores)
     p_metrics = OrderedDict((str(model), model) for model in models)
+    p_metrics_f1 = OrderedDict((str(model), model) for model in models)
+    y_preds = OrderedDict((str(model), model) for model in models)
     p_metrics_conf_matrix = OrderedDict((str(model), model) for model in models)
     for i, (name, model) in enumerate(lrs.items()):
         files = ['data/processed/accuracy_{0}_{1}.p'.format(get_fname(name), tag),
-                 'data/processed/confusion_matrix_{0}_{1}.p'.format(get_fname(name), tag)]
+                 'data/processed/confusion_matrix_{0}_{1}.p'.format(get_fname(name), tag),
+                 'data/processed/f1_{0}_{1}.p'.format(get_fname(name), tag),
+                 'data/processed/y_preds_{0}_{1}.p'.format(get_fname(name), tag)]
         if all([os.path.exists(file) for file in files]):
             print('Predictions exist, loading...')
             p_metrics[name] = pickle.load(open(files[0], 'rb'))
             p_metrics_conf_matrix[name] = pickle.load(open(files[1], 'rb'))
+            y_preds[name] = pickle.load(open(files[3], 'rb'))
         else:
             print('Making predictions...')
-            y_pred = model.predict(corpuses_test[name])
-            p_metrics[name] = metrics.accuracy_score(y_true=y_test, y_pred=y_pred)
-            p_metrics_conf_matrix[name] = metrics.confusion_matrix(y_true=y_test, y_pred=y_pred)
+            y_preds[name] = model.predict(corpuses_test[name])
+            p_metrics[name] = metrics.accuracy_score(y_true=y_test, y_pred=y_preds[name])
+            p_metrics_conf_matrix[name] = metrics.confusion_matrix(y_true=y_test, y_pred=y_preds[name])
             pickle.dump(p_metrics[name], open(files[0], 'wb'))
+            pickle.dump(p_metrics_f1[name], open(files[2], 'wb'))
             pickle.dump(p_metrics_conf_matrix[name], open(files[1], 'wb'))
-        print('name: {0} - accuracy: {1}'.format(get_fname(name), p_metrics[name]))
-        # print('name: {0} - confusion matrix:\n{1}'.format(get_fname(name), p_metrics_conf_matrix[name]))
-    return p_metrics_conf_matrix, p_metrics
+            pickle.dump(y_preds[name], open(files[3], 'wb'))
+        print('name: {0} - accuracy: {1} - f1: {2}'.format(get_fname(name), p_metrics[name], p_metrics_f1))
+        print('name: {0} - confusion matrix:\n{1}'.format(get_fname(name), p_metrics_conf_matrix[name]))
+    return p_metrics_conf_matrix, p_metrics, y_preds
 
 
 def main(tag):
     create_train_test_datasets(tag)
-    predictions_d2vec(tag)
     predict_bow_tfidf(tag)
+    predictions_d2vec(tag)
